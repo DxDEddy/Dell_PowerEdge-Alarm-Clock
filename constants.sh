@@ -1,4 +1,4 @@
 #!/bin/bash
 
-# Define the interval for printing temperature table header
+# Reprint column header every N cycles
 readonly TABLE_HEADER_PRINT_INTERVAL=10

@@ -1,14 +1,9 @@
-# Define global functions
-# This function applies Dell's default dynamic fan control profile
 function apply_Dell_default_fan_control_profile() {
-  # Use ipmitool to send the raw command to set fan control to Dell default
   ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0x30 0x01 0x01 > /dev/null
   CURRENT_FAN_CONTROL_PROFILE="Dell default dynamic fan control profile"
 }
 
-# This function applies a user-specified static fan control profile
 function apply_user_fan_control_profile() {
-  # Use ipmitool to send the raw command to set fan control to user-specified value
   ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0x30 0x01 0x00 > /dev/null
   ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0x30 0x02 0xff $HEXADECIMAL_FAN_SPEED > /dev/null
   CURRENT_FAN_CONTROL_PROFILE="User static fan control profile ($DECIMAL_FAN_SPEED%)"
@@ -98,13 +93,13 @@ function retrieve_temperatures() {
   fi
 }
 
-# /!\ Use this function only for Gen 13 and older generation servers /!\
+# Gen 13 and older only
 function enable_third_party_PCIe_card_Dell_default_cooling_response() {
   # We could check the current cooling response before applying but it's not very useful so let's skip the test and apply directly
   ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0xce 0x00 0x16 0x05 0x00 0x00 0x00 0x05 0x00 0x00 0x00 0x00 > /dev/null
 }
 
-# /!\ Use this function only for Gen 13 and older generation servers /!\
+# Gen 13 and older only
 function disable_third_party_PCIe_card_Dell_default_cooling_response() {
   # We could check the current cooling response before applying but it's not very useful so let's skip the test and apply directly
   ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0xce 0x00 0x16 0x05 0x00 0x00 0x00 0x05 0x00 0x01 0x00 0x00 > /dev/null
@@ -127,7 +122,7 @@ function disable_third_party_PCIe_card_Dell_default_cooling_response() {
 #   fi
 # }
 
-# Prepare traps in case of container exit
+# Trap handler for container shutdown
 function graceful_exit() {
   apply_Dell_default_fan_control_profile
 
@@ -212,7 +207,7 @@ function print_temperature_array_line() {
   local -r CPUs_temperatures_array=(${LOCAL_CPUS_TEMPERATURES//;/ })
 
   printf "%19s  %3d°C " "$(date +"%d-%m-%Y %T")" $LOCAL_INLET_TEMPERATURE
-  # Itération sur les températures dans le tableau
+  # Loop through CPU temperatures
   for temperature in "${CPUs_temperatures_array[@]}"; do
     printf " %3d°C " $temperature
   done
@@ -220,9 +215,123 @@ function print_temperature_array_line() {
   printf " %5s°C  %40s  %51s  %s\n" "$LOCAL_EXHAUST_TEMPERATURE" "$LOCAL_CURRENT_FAN_CONTROL_PROFILE" "$LOCAL_THIRD_PARTY_PCIE_CARD_DELL_DEFAULT_COOLING_RESPONSE_STATUS" "$LOCAL_COMMENT"
 }
 
-# Define functions to check if CPU 1 and CPU 2 temperatures are above the threshold
 function CPU1_OVERHEATING() { [ $CPU1_TEMPERATURE -gt "$CPU_TEMPERATURE_THRESHOLD" ]; }
 function CPU2_OVERHEATING() { [ $CPU2_TEMPERATURE -gt "$CPU_TEMPERATURE_THRESHOLD" ]; }
+
+# Check if the current day matches a days string
+# Usage: is_alarm_day "$days_string"
+# $days_string is a comma-separated list like "Mon,Tue,Wed" or "*" for every day
+function is_alarm_day() {
+  local DAYS_STRING="$1"
+
+  if [[ "$DAYS_STRING" == "*" ]]; then
+    return 0
+  fi
+
+  local CURRENT_DAY
+  CURRENT_DAY=$(LC_TIME=C date +%a)
+
+  local DAY_ARRAY
+  IFS=',' read -ra DAY_ARRAY <<< "$DAYS_STRING"
+  for DAY in "${DAY_ARRAY[@]}"; do
+    DAY=$(echo "$DAY" | tr -d ' ')
+    if [[ "${DAY,,}" == "${CURRENT_DAY,,}" ]]; then
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+# Check if the current time is within the alarm window
+# Usage: is_in_alarm_window "$start_time" "$end_time"
+# Handles overnight windows (e.g., 23:00-01:00) where start > end
+function is_in_alarm_window() {
+  local ALARM_START="$1"
+  local ALARM_END="$2"
+
+  local CURRENT_TIME CURRENT_HOUR CURRENT_MIN START_HOUR START_MIN END_HOUR END_MIN
+  CURRENT_TIME=$(date +%H:%M)
+  CURRENT_HOUR="${CURRENT_TIME%%:*}"
+  CURRENT_MIN="${CURRENT_TIME##*:}"
+
+  START_HOUR="${ALARM_START%%:*}"
+  START_MIN="${ALARM_START##*:}"
+  END_HOUR="${ALARM_END%%:*}"
+  END_MIN="${ALARM_END##*:}"
+
+  local CURRENT_MINUTES=$(( 10#$CURRENT_HOUR * 60 + 10#$CURRENT_MIN ))
+  local START_MINUTES=$(( 10#$START_HOUR * 60 + 10#$START_MIN ))
+  local END_MINUTES=$(( 10#$END_HOUR * 60 + 10#$END_MIN ))
+
+  if (( START_MINUTES <= END_MINUTES )); then
+    (( CURRENT_MINUTES >= START_MINUTES && CURRENT_MINUTES < END_MINUTES ))
+  else
+    (( CURRENT_MINUTES >= START_MINUTES || CURRENT_MINUTES < END_MINUTES ))
+  fi
+}
+
+# Ping each host and return 0 (online) or 1 (offline) via exit code
+# Usage: check_alarm_hosts "$hosts_csv" "$logic"
+# $logic: "any" = one host up is enough, "all" = every host must be up
+function check_alarm_hosts() {
+  local HOSTS_CSV="$1"
+  local LOGIC="${2:-any}"
+  local HOST_UP_COUNT=0
+  local HOST_TOTAL=0
+  local HOST_ARRAY
+
+  IFS=',' read -ra HOST_ARRAY <<< "$HOSTS_CSV"
+  for HOST in "${HOST_ARRAY[@]}"; do
+    HOST=$(echo "$HOST" | tr -d ' ')
+    [[ -z "$HOST" ]] && continue
+    ((HOST_TOTAL++))
+    if ping -c 1 -W 2 "$HOST" > /dev/null 2>&1; then
+      ((HOST_UP_COUNT++))
+    fi
+  done
+
+  if [[ "$LOGIC" == "all" ]]; then
+    (( HOST_UP_COUNT == HOST_TOTAL && HOST_TOTAL > 0 ))
+  else
+    (( HOST_UP_COUNT > 0 ))
+  fi
+}
+
+# Apply the alarm fan control profile (high speed to wake the user up)
+# Usage: apply_alarm_fan_control_profile "$hex_speed" "$dec_speed"
+function apply_alarm_fan_control_profile() {
+  local HEX_SPEED="$1"
+  local DEC_SPEED="$2"
+  ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0x30 0x01 0x00 > /dev/null
+  ipmitool -I $IDRAC_LOGIN_STRING raw 0x30 0x30 0x02 0xff $HEX_SPEED > /dev/null
+  CURRENT_FAN_CONTROL_PROFILE="ALARM fan control profile ($DEC_SPEED%)"
+}
+
+# Discover alarm schedules from environment variables
+# Scans for ALARM_N_START_TIME patterns. Falls back to legacy single-alarm (index 0)
+# if no numbered alarms found but ALARM_START_TIME is set. Populates ALARM_IDS array.
+function discover_alarms() {
+  ALARM_IDS=()
+  for N in $(env | grep -oP '^ALARM_\K[0-9]+(?=_START_TIME=)' | sort -n | uniq); do
+    ALARM_IDS+=("$N")
+  done
+}
+
+# Read alarm config field, with fallback to base ALARM_* variable
+# Usage: get_alarm_config "$alarm_id" "$field"
+# For alarm 0 (legacy), reads ALARM_FIELD directly.
+# For numbered alarms, reads ALARM_N_FIELD, falls back to ALARM_FIELD.
+function get_alarm_config() {
+  local ALARM_ID="$1" FIELD="$2"
+  local VAR_NAME="ALARM_${ALARM_ID}_${FIELD}"
+  local VALUE="${!VAR_NAME:-}"
+  if [[ -z "$VALUE" ]]; then
+    local FALLBACK_VAR="ALARM_${FIELD}"
+    VALUE="${!FALLBACK_VAR:-}"
+  fi
+  echo "$VALUE"
+}
 
 function print_error() {
   local -r ERROR_MESSAGE="$1"

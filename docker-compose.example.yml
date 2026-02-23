@@ -1,0 +1,57 @@
+services:
+  # Example: single server, no alarm
+  Dell_iDRAC_fan_controller_basic:
+    build: .
+    image: dell_idrac_fan_controller:alarm
+    container_name: Dell_iDRAC_fan_controller_basic
+    restart: unless-stopped
+    environment:
+      - IDRAC_HOST=192.168.1.100
+      - IDRAC_USERNAME=root
+      - IDRAC_PASSWORD=${IDRAC_PASSWORD}
+      - FAN_SPEED=5
+      - CPU_TEMPERATURE_THRESHOLD=55
+      - CHECK_INTERVAL=15
+      - DISABLE_THIRD_PARTY_PCIE_CARD_DELL_DEFAULT_COOLING_RESPONSE=true
+      - KEEP_THIRD_PARTY_PCIE_CARD_COOLING_RESPONSE_STATE_ON_EXIT=true
+      - TZ=America/Chicago
+
+  # Example: server with multi-alarm wake-up schedules
+  Dell_iDRAC_fan_controller_with_alarm:
+    build: .
+    image: dell_idrac_fan_controller:alarm
+    container_name: Dell_iDRAC_fan_controller_with_alarm
+    restart: unless-stopped
+    environment:
+      - IDRAC_HOST=192.168.1.101
+      - IDRAC_USERNAME=root
+      - IDRAC_PASSWORD=${IDRAC_PASSWORD}
+      - FAN_SPEED=2
+      - CPU_TEMPERATURE_THRESHOLD=55
+      - CHECK_INTERVAL=15
+      - DISABLE_THIRD_PARTY_PCIE_CARD_DELL_DEFAULT_COOLING_RESPONSE=true
+      - KEEP_THIRD_PARTY_PCIE_CARD_COOLING_RESPONSE_STATE_ON_EXIT=true
+      - TZ=America/Chicago
+      # --- Alarm clock ---
+      # Fans ramp to ALARM_FAN_SPEED during the alarm window if CHECK_HOSTS
+      # are offline (user hasn't woken up). Once any host responds to ping,
+      # the alarm is dismissed and fans return to normal.
+      - ALARM_ENABLED=true
+      # Shared defaults — inherited by all numbered alarms unless overridden
+      # Comma-separated hosts; with logic=any, ANY host online dismisses the alarm
+      - ALARM_CHECK_HOSTS=${ALARM_CHECK_HOSTS}
+      - ALARM_HOST_LOGIC=any
+      - ALARM_FAN_SPEED=100
+      - ALARM_PERSIST=false
+      - ALARM_MAX_DURATION=60
+      # --- Alarm 1: most weekdays ---
+      - ALARM_1_START_TIME=08:58
+      - ALARM_1_END_TIME=09:00
+      - ALARM_1_DAYS=Mon,Wed,Thu,Fri
+      # --- Alarm 2: early Tuesday ---
+      - ALARM_2_START_TIME=06:29
+      - ALARM_2_END_TIME=06:30
+      - ALARM_2_DAYS=Tue
+      # Add more alarms with ALARM_3_*, ALARM_4_*, etc.
+      # Each alarm only needs START_TIME, END_TIME, and DAYS.
+      # All other fields fall back to the shared defaults above.

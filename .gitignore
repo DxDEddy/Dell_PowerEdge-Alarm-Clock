@@ -1,0 +1,7 @@
+docker-compose.yml
+.env
+.claude/
+.venv/
+logs/
+scratch/
+__pycache__/

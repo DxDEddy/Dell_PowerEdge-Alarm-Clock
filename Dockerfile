@@ -1,10 +1,10 @@
 FROM ubuntu:latest
 
-LABEL org.opencontainers.image.authors="tigerblue77"
+LABEL org.opencontainers.image.authors="DxDEddy"
 
 RUN apt-get update
 
-RUN apt-get install ipmitool -y
+RUN apt-get install ipmitool iputils-ping -y
 
 ADD functions.sh /app/functions.sh
 ADD constants.sh /app/constants.sh
@@ -27,5 +27,16 @@ ENV CPU_TEMPERATURE_THRESHOLD=50
 ENV CHECK_INTERVAL=60
 ENV DISABLE_THIRD_PARTY_PCIE_CARD_DELL_DEFAULT_COOLING_RESPONSE=false
 ENV KEEP_THIRD_PARTY_PCIE_CARD_COOLING_RESPONSE_STATE_ON_EXIT=false
+
+# Alarm clock feature - ramp fans to wake you up
+# Shared defaults inherited by all numbered alarms (ALARM_1_*, ALARM_2_*, etc.)
+ENV ALARM_ENABLED=false
+ENV ALARM_CHECK_HOSTS=workpc.local
+ENV ALARM_HOST_LOGIC=any
+ENV ALARM_FAN_SPEED=100
+ENV ALARM_PERSIST=false
+ENV ALARM_MAX_DURATION=60
+
+ENV TZ=Europe/London
 
 ENTRYPOINT ["./Dell_iDRAC_fan_controller.sh"]

@@ -1,7 +1,6 @@
 #!/bin/bash
 
-# Enable strict bash mode to stop the script if an uninitialized variable is used, if a command fails, or if a command with a pipe fails
-# Not working in some setups : https://github.com/tigerblue77/Dell_iDRAC_fan_controller/issues/48
+# Strict mode disabled -- see github.com/tigerblue77/Dell_iDRAC_fan_controller/issues/48
 # set -euo pipefail
 
 source functions.sh
@@ -9,8 +8,6 @@ source constants.sh
 
 # Trap the signals for container exit and run graceful_exit function
 trap 'graceful_exit' SIGINT SIGQUIT SIGTERM
-
-# Prepare, format and define initial variables
 
 # readonly DELL_FRESH_AIR_COMPLIANCE=45
 
@@ -21,6 +18,72 @@ if [[ "$FAN_SPEED" == 0x* ]]; then
 else
   readonly DECIMAL_FAN_SPEED="$FAN_SPEED"
   readonly HEXADECIMAL_FAN_SPEED=$(convert_decimal_value_to_hexadecimal "$FAN_SPEED")
+fi
+
+# Multi-alarm discovery and configuration
+# Per-alarm config arrays (indexed by position in ALARM_IDS)
+declare -a ALARM_START_TIMES=()
+declare -a ALARM_END_TIMES=()
+declare -a ALARM_DAYS_LIST=()
+declare -a ALARM_CHECK_HOSTS_LIST=()
+declare -a ALARM_HOST_LOGIC_LIST=()
+declare -a ALARM_FAN_SPEEDS_DEC=()
+declare -a ALARM_FAN_SPEEDS_HEX=()
+declare -a ALARM_PERSIST_LIST=()
+declare -a ALARM_MAX_DURATION_LIST=()
+# Per-alarm state arrays
+declare -a ALARM_IS_ACTIVE=()
+declare -a ALARM_TRIGGERED_DATES=()
+declare -a ALARM_START_EPOCHS=()
+
+ALARM_COUNT=0
+if [[ "$ALARM_ENABLED" == "true" ]]; then
+  discover_alarms
+
+  if [[ ${#ALARM_IDS[@]} -eq 0 ]]; then
+    print_error_and_exit "ALARM_ENABLED is true but no alarm schedules found. Set ALARM_1_START_TIME, ALARM_2_START_TIME, etc."
+  fi
+
+  for i in "${!ALARM_IDS[@]}"; do
+    local_id="${ALARM_IDS[$i]}"
+
+    # Load config with fallback to base ALARM_* vars
+    ALARM_START_TIMES[$i]=$(get_alarm_config "$local_id" "START_TIME")
+    ALARM_END_TIMES[$i]=$(get_alarm_config "$local_id" "END_TIME")
+    ALARM_DAYS_LIST[$i]=$(get_alarm_config "$local_id" "DAYS")
+    ALARM_CHECK_HOSTS_LIST[$i]=$(get_alarm_config "$local_id" "CHECK_HOSTS")
+    ALARM_HOST_LOGIC_LIST[$i]=$(get_alarm_config "$local_id" "HOST_LOGIC")
+    ALARM_PERSIST_LIST[$i]=$(get_alarm_config "$local_id" "PERSIST")
+    ALARM_MAX_DURATION_LIST[$i]=$(get_alarm_config "$local_id" "MAX_DURATION")
+
+    # Convert fan speed to hex/dec
+    local_fan_speed=$(get_alarm_config "$local_id" "FAN_SPEED")
+    if [[ "$local_fan_speed" == 0x* ]]; then
+      ALARM_FAN_SPEEDS_DEC[$i]=$(convert_hexadecimal_value_to_decimal "$local_fan_speed")
+      ALARM_FAN_SPEEDS_HEX[$i]="$local_fan_speed"
+    else
+      ALARM_FAN_SPEEDS_DEC[$i]="$local_fan_speed"
+      ALARM_FAN_SPEEDS_HEX[$i]=$(convert_decimal_value_to_hexadecimal "$local_fan_speed")
+    fi
+
+    # Validate
+    if (( ALARM_FAN_SPEEDS_DEC[$i] < 0 || ALARM_FAN_SPEEDS_DEC[$i] > 100 )); then
+      print_error_and_exit "Alarm ${local_id}: FAN_SPEED must be between 0 and 100, got: $local_fan_speed"
+    fi
+    if [[ -z "${ALARM_CHECK_HOSTS_LIST[$i]}" ]]; then
+      print_error_and_exit "Alarm ${local_id}: CHECK_HOSTS is empty. At least one host is required for alarm dismissal"
+    fi
+    if [[ -z "${ALARM_START_TIMES[$i]}" || -z "${ALARM_END_TIMES[$i]}" ]]; then
+      print_error_and_exit "Alarm ${local_id}: START_TIME and END_TIME are required"
+    fi
+
+    # Init state
+    ALARM_IS_ACTIVE[$i]=false
+    ALARM_TRIGGERED_DATES[$i]=""
+    ALARM_START_EPOCHS[$i]=0
+  done
+
+  ALARM_COUNT=${#ALARM_IDS[@]}
 fi
 
 set_iDRAC_login_string "$IDRAC_HOST" "$IDRAC_USERNAME" "$IDRAC_PASSWORD"
@@ -42,14 +105,30 @@ else
   readonly CPU2_TEMPERATURE_INDEX=2
 fi
 
-# Log main informations
+# Log startup info
 echo "Server model: $SERVER_MANUFACTURER $SERVER_MODEL"
 echo "iDRAC/IPMI host: $IDRAC_HOST"
 
-# Log the fan speed objective, CPU temperature threshold and check interval
 echo "Fan speed objective: $DECIMAL_FAN_SPEED%"
 echo "CPU temperature threshold: "$CPU_TEMPERATURE_THRESHOLD"°C"
 echo "Check interval: ${CHECK_INTERVAL}s"
+if [[ "$ALARM_ENABLED" == "true" ]]; then
+  echo ""
+  echo "*** ALARM CLOCK ENABLED ($ALARM_COUNT alarm(s)) ***"
+  for i in "${!ALARM_IDS[@]}"; do
+    local_id="${ALARM_IDS[$i]}"
+    echo "  --- Alarm $local_id ---"
+    echo "    Window: ${ALARM_START_TIMES[$i]} - ${ALARM_END_TIMES[$i]}"
+    echo "    Days: ${ALARM_DAYS_LIST[$i]}"
+    echo "    Check hosts: ${ALARM_CHECK_HOSTS_LIST[$i]} (logic: ${ALARM_HOST_LOGIC_LIST[$i]})"
+    echo "    Fan speed: ${ALARM_FAN_SPEEDS_DEC[$i]}%"
+    echo "    Persist past window: ${ALARM_PERSIST_LIST[$i]}"
+    if [[ "${ALARM_PERSIST_LIST[$i]}" == "true" ]]; then
+      echo "    Max alarm duration: ${ALARM_MAX_DURATION_LIST[$i]} minutes"
+    fi
+  done
+  echo "  Timezone: ${TZ:-UTC}"
+fi
 echo ""
 
 TABLE_HEADER_PRINT_COUNTER=$TABLE_HEADER_PRINT_INTERVAL
@@ -68,7 +147,7 @@ if [ -z "$CPU2_TEMPERATURE" ]; then
   echo "No CPU2 temperature sensor detected."
   IS_CPU2_TEMPERATURE_SENSOR_PRESENT=false
 fi
-# Output new line to beautify output if one of the previous conditions have echoed
+# Blank line after sensor detection messages
 if ! $IS_EXHAUST_TEMPERATURE_SENSOR_PRESENT || ! $IS_CPU2_TEMPERATURE_SENSOR_PRESENT; then
   echo ""
 fi
@@ -85,7 +164,69 @@ while true; do
 
   retrieve_temperatures $IS_EXHAUST_TEMPERATURE_SENSOR_PRESENT $IS_CPU2_TEMPERATURE_SENSOR_PRESENT
 
-  # Initialize a variable to store the comments displayed when the fan control profile changed
+  # --- Alarm clock logic (multi-alarm) ---
+  ALARM_SHOULD_SOUND=false
+  ACTIVE_ALARM_HEX=""
+  ACTIVE_ALARM_DEC=0
+  ACTIVE_ALARM_LABEL=""
+  if [[ "$ALARM_ENABLED" == "true" ]]; then
+    local_today=$(date +%Y-%m-%d)
+
+    for i in "${!ALARM_IDS[@]}"; do
+      local_id="${ALARM_IDS[$i]}"
+      local_label="Alarm $local_id"
+
+      IN_WINDOW=false
+      if is_alarm_day "${ALARM_DAYS_LIST[$i]}" && is_in_alarm_window "${ALARM_START_TIMES[$i]}" "${ALARM_END_TIMES[$i]}"; then
+        IN_WINDOW=true
+      fi
+
+      ALREADY_TRIGGERED_TODAY=false
+      if [[ "${ALARM_TRIGGERED_DATES[$i]}" == "$local_today" ]]; then
+        ALREADY_TRIGGERED_TODAY=true
+      fi
+
+      if ${ALARM_IS_ACTIVE[$i]}; then
+        # This alarm is currently sounding — check for dismissal, timeout, or window expiry
+        if check_alarm_hosts "${ALARM_CHECK_HOSTS_LIST[$i]}" "${ALARM_HOST_LOGIC_LIST[$i]}"; then
+          ALARM_IS_ACTIVE[$i]=false
+          ALARM_TRIGGERED_DATES[$i]=$local_today
+          echo "$(date +"%d-%m-%Y %T") $local_label DISMISSED: host(s) came online, resuming normal fan control"
+        elif ! $IN_WINDOW && [[ "${ALARM_PERSIST_LIST[$i]}" != "true" ]]; then
+          ALARM_IS_ACTIVE[$i]=false
+          ALARM_TRIGGERED_DATES[$i]=$local_today
+          echo "$(date +"%d-%m-%Y %T") $local_label EXPIRED: window ended, resuming normal fan control"
+        elif [[ "${ALARM_PERSIST_LIST[$i]}" == "true" ]] && (( $(date +%s) - ALARM_START_EPOCHS[$i] > ALARM_MAX_DURATION_LIST[$i] * 60 )); then
+          ALARM_IS_ACTIVE[$i]=false
+          ALARM_TRIGGERED_DATES[$i]=$local_today
+          echo "$(date +"%d-%m-%Y %T") $local_label TIMED OUT: max duration of ${ALARM_MAX_DURATION_LIST[$i]} minutes reached, resuming normal fan control"
+        else
+          # Keep sounding — pick highest fan speed if multiple alarms active
+          if (( ALARM_FAN_SPEEDS_DEC[$i] > ACTIVE_ALARM_DEC )); then
+            ACTIVE_ALARM_HEX="${ALARM_FAN_SPEEDS_HEX[$i]}"
+            ACTIVE_ALARM_DEC=${ALARM_FAN_SPEEDS_DEC[$i]}
+            ACTIVE_ALARM_LABEL="$local_label"
+          fi
+          ALARM_SHOULD_SOUND=true
+        fi
+      elif $IN_WINDOW && ! $ALREADY_TRIGGERED_TODAY; then
+        # In window, alarm hasn't triggered yet today — check if we should trigger
+        if ! check_alarm_hosts "${ALARM_CHECK_HOSTS_LIST[$i]}" "${ALARM_HOST_LOGIC_LIST[$i]}"; then
+          ALARM_IS_ACTIVE[$i]=true
+          ALARM_START_EPOCHS[$i]=$(date +%s)
+          echo "$(date +"%d-%m-%Y %T") $local_label TRIGGERED: host(s) offline, ramping fans to ${ALARM_FAN_SPEEDS_DEC[$i]}%"
+          if (( ALARM_FAN_SPEEDS_DEC[$i] > ACTIVE_ALARM_DEC )); then
+            ACTIVE_ALARM_HEX="${ALARM_FAN_SPEEDS_HEX[$i]}"
+            ACTIVE_ALARM_DEC=${ALARM_FAN_SPEEDS_DEC[$i]}
+            ACTIVE_ALARM_LABEL="$local_label"
+          fi
+          ALARM_SHOULD_SOUND=true
+        fi
+      fi
+    done
+  fi
+
+  # Reset comment for this cycle
   COMMENT=" -"
   # Check if CPU 1 is overheating then apply Dell default dynamic fan control profile if true
   if CPU1_OVERHEATING; then
@@ -109,6 +250,15 @@ while true; do
     if ! $IS_DELL_DEFAULT_FAN_CONTROL_PROFILE_APPLIED; then
       IS_DELL_DEFAULT_FAN_CONTROL_PROFILE_APPLIED=true
       COMMENT="CPU 2 temperature is too high, Dell default dynamic fan control profile applied for safety"
+    fi
+  elif $ALARM_SHOULD_SOUND; then
+    apply_alarm_fan_control_profile "$ACTIVE_ALARM_HEX" "$ACTIVE_ALARM_DEC"
+
+    if ! $IS_DELL_DEFAULT_FAN_CONTROL_PROFILE_APPLIED; then
+      COMMENT="$ACTIVE_ALARM_LABEL ACTIVE: fans at $ACTIVE_ALARM_DEC% — waiting for host(s) to come online"
+    else
+      IS_DELL_DEFAULT_FAN_CONTROL_PROFILE_APPLIED=false
+      COMMENT="$ACTIVE_ALARM_LABEL ACTIVE: fans at $ACTIVE_ALARM_DEC% (overriding Dell default)"
     fi
   else
     apply_user_fan_control_profile
