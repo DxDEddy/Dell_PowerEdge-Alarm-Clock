@@ -12,9 +12,9 @@ I run this across an R730xd (dev), R630 (lab), and R520 (NAS). All three scream 
 
 This only works on Dell PowerEdge servers that support IPMI commands, i.e. iDRAC firmware < 3.30.30.30 on iDRAC 9.
 I've tested on:
-- R730xD (Can't remember versions right now)
-- R630 ()
-- R520 ()
+- R730xD (BIOS: 2.19.0 - FIRMWARE: 2.85.85.85)
+- R630 (BIOS: 2.19.0 - FIRMWARE: 2.85.85.85)
+- R520 (BIOS: 2.9.0 - FIRMWARE: 2.65.65.65)
 ### Enabling IPMI over LAN
 
 Not needed if you're running in "local" mode (container on the server itself). For LAN mode:
