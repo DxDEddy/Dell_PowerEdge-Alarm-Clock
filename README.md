@@ -1,10 +1,13 @@
 # Dell iDRAC Fan Controller (Docker)
 
-I slept in 3 times in 2 weeks. So I did what any reasonable person would do: Built one of the most compute-heavy alarm clocks on the planet (As far as I know anyway...)
+I slept in 3 times in 2 weeks. So I did what any reasonable person would do: Build an alarm clock with (as far as I know) the most compute power on the planet!
 
-This is a fork of [Tigerblue77's original work](https://github.com/tigerblue77/Dell_iDRAC_fan_controller_Docker) -- They did the hard work of figuring out the IPMI raw commands to override Dell's aggressive fan curves. I bolted on an alarm clock feature: you set a time window and some hostnames to ping, and if those machines are offline when the window hits (i.e. you're still in bed), the fans ramp to 100%. They only shut up once your workstation responds to ping.
+This is a fork of [Tigerblue77's original work](https://github.com/tigerblue77/Dell_iDRAC_fan_controller_Docker) - They did the hard work of figuring out the IPMI raw commands to override Dell's aggressive fan curves. I bolted on an alarm clock feature: you set a time window and some hostnames to ping, and if those machines are offline when the window hits (i.e. you're still in bed), the fans ramp to 100%. They only shut up once your workstation responds to ping.
 
-I run this across an R730xd (dev), R630 (lab), and R520 (NAS). All three scream at me simultaneously every morning. It works wonderfully aside from the self-inflicted tinnitus.
+I run this across my R730xd (dev), R630 (lab), and R520 (NAS). All three scream at me simultaneously every morning. It works wonderfully aside from the self-inflicted tinnitus.
+
+(Here's a picture! Excuse the AI Server hanging out at the bottom, it has some broken rails at the moment...)
+![alt text](images/rack-pic.png)
 
 ## Requirements
 
